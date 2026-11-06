@@ -16,6 +16,7 @@ import * as React from "react";
 import type { EditorialAnchor } from "../../editorial-anchors.js";
 import type {
 	EditorialComment,
+	EditorialEntry,
 	EditorialPerson,
 	EditorialThread,
 } from "../../lib/api/editorial-threads.js";
@@ -27,10 +28,18 @@ import {
 	getEditorialPending,
 	locateAnchor,
 } from "../editor/EditorialCommentsExtension.js";
+import {
+	bodyToDraft,
+	draftToBody,
+	MentionText,
+	useMentionPicker,
+	type MentionDraft,
+} from "./mentions.js";
 import { isEditorAnchor, type EditorialCommentsState } from "./useEditorialComments.js";
 
 const CARD_GAP_PX = 8;
 const WHITESPACE = /\s+/;
+const EMPTY_DRAFT: MentionDraft = { text: "", mentions: [] };
 
 export interface EditorialCommentsUser {
 	id: string;
@@ -339,8 +348,8 @@ export function MarginComments({
 	const draftLost = draft?.range != null && shownDraft === draft && !draftPending;
 	const draftInPlace =
 		positioned && !draftLost && (draft?.range != null || fieldThreads.has("draft"));
-	const [draftBody, setDraftBody] = React.useState({ draft, body: "" });
-	const draftText = draftBody.draft === draft ? draftBody.body : "";
+	const [draftBody, setDraftBody] = React.useState({ draft, body: EMPTY_DRAFT });
+	const draftText = draftBody.draft === draft ? draftBody.body : EMPTY_DRAFT;
 	const positionedIds = React.useMemo(
 		() => [...inPlace.map((thread) => thread.id), ...(draftInPlace ? ["draft"] : [])],
 		// oxlint-disable-next-line react-hooks/exhaustive-deps -- recompute only when the set of ids changes
@@ -380,6 +389,7 @@ export function MarginComments({
 			body={draftText}
 			onBodyChange={(value) => setDraftBody({ draft, body: value })}
 			quote={draft.anchor.type === "text" ? draft.anchor.quote : null}
+			entry={comments.entry}
 			currentUser={currentUser}
 			pending={comments.actions.createThread.isPending}
 			onCancel={() => comments.setDraft(null)}
@@ -518,6 +528,7 @@ function DraftCard({
 	detached,
 	body,
 	onBodyChange,
+	entry,
 	currentUser,
 	pending,
 	onCancel,
@@ -528,8 +539,9 @@ function DraftCard({
 	quote: string | null;
 	detached: boolean;
 	/** Held by the margin, so the text survives the card moving between the list and its anchor. */
-	body: string;
-	onBodyChange: (body: string) => void;
+	body: MentionDraft;
+	onBodyChange: (body: MentionDraft) => void;
+	entry: EditorialEntry | null;
 	currentUser: EditorialCommentsUser | undefined;
 	pending: boolean;
 	onCancel: () => void;
@@ -555,14 +567,15 @@ function DraftCard({
 			</div>
 			{quote && <Quote text={quote} detached={detached} />}
 			<CommentComposer
+				entry={entry}
 				value={body}
 				onChange={onBodyChange}
 				label={t`Comment`}
-				placeholder={t`Add a comment`}
+				placeholder={t`Add a comment. Type @ to mention someone.`}
 				submitLabel={t`Comment`}
 				pending={pending}
 				onCancel={onCancel}
-				onSubmit={() => onSubmit(body.trim())}
+				onSubmit={() => onSubmit(draftToBody(body))}
 			/>
 		</div>
 	);
@@ -582,6 +595,7 @@ function Quote({ text, detached }: { text: string; detached?: boolean }) {
 }
 
 function CommentComposer({
+	entry,
 	value,
 	onChange,
 	label,
@@ -593,8 +607,9 @@ function CommentComposer({
 	onCancel,
 	onSubmit,
 }: {
-	value: string;
-	onChange: (value: string) => void;
+	entry: EditorialEntry | null;
+	value: MentionDraft;
+	onChange: (value: MentionDraft) => void;
 	label: string;
 	placeholder: string;
 	submitLabel: string;
@@ -606,18 +621,26 @@ function CommentComposer({
 	onSubmit: () => void;
 }) {
 	const { t } = useLingui();
-	const empty = value.trim().length === 0;
+	const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+	const picker = useMentionPicker({ entry, draft: value, onDraftChange: onChange, textareaRef });
+	const empty = value.text.trim().length === 0;
 	return (
 		<div className="flex flex-col gap-2">
 			<InputArea
+				ref={textareaRef}
 				aria-label={label}
 				placeholder={placeholder}
-				value={value}
+				value={value.text}
 				rows={compact ? 1 : 2}
 				autoFocus={autoFocus}
 				className="max-h-60 resize-none field-sizing-content"
-				onChange={(event) => onChange(event.target.value)}
+				{...picker.textareaProps}
+				onChange={(event) => {
+					onChange({ ...value, text: event.target.value });
+					picker.syncCaret(event);
+				}}
 				onKeyDown={(event) => {
+					if (picker.handleKeyDown(event)) return;
 					if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !empty && !pending) {
 						event.preventDefault();
 						onSubmit();
@@ -628,6 +651,7 @@ function CommentComposer({
 					}
 				}}
 			/>
+			{picker.listbox}
 			{(!compact || !empty) && (
 				<div className="flex justify-end gap-2">
 					{onCancel && (
@@ -669,7 +693,7 @@ function ThreadCard({
 	const { t, i18n } = useLingui();
 	const anchorLabel = useAnchorLabel();
 	const active = comments.activeThreadId === thread.id;
-	const [reply, setReply] = React.useState("");
+	const [reply, setReply] = React.useState(EMPTY_DRAFT);
 	const [confirmingDelete, setConfirmingDelete] = React.useState(false);
 	const resolved = thread.status === "resolved";
 	const { actions } = comments;
@@ -690,149 +714,152 @@ function ThreadCard({
 
 	return (
 		<>
-			<article
-				aria-label={t`Comment thread`}
-				data-editorial-thread-card={thread.id}
-				tabIndex={active ? -1 : 0}
-				onClick={activate}
-				onKeyDown={(event) => {
-					if (event.target !== event.currentTarget) return;
-					if (event.key === "Enter" || event.key === " ") {
-						event.preventDefault();
-						activate();
-					}
-					if (event.key === "Escape") comments.setActiveThreadId(null);
-				}}
-				className={cn(
-					"group/thread rounded-xl border bg-kumo-base p-3 text-sm transition-[border-color,box-shadow]",
-					active
-						? "border-kumo-brand shadow-md"
-						: "cursor-pointer border-kumo-line hover:shadow-sm",
-					resolved && !active && "opacity-75",
-				)}
-			>
-				{(heading || detached || resolved) && (
-					<div className="mb-2 flex min-w-0 items-center gap-1.5">
-						{heading && <span className="truncate text-xs text-kumo-subtle">{heading}</span>}
-						{detached && <Badge variant="secondary">{t`Detached`}</Badge>}
-						{resolved && <Badge variant="secondary">{t`Resolved`}</Badge>}
-					</div>
-				)}
-
-				{thread.anchor.type === "text" && (detached || !active) && (
-					<Quote text={thread.anchor.quote} detached={detached} />
-				)}
-
-				<ol className="flex flex-col gap-3">
-					{visibleComments.map((comment, index) => (
-						<CommentItem
-							key={comment.id}
-							comment={comment}
-							revealed={active}
-							threadActions={
-								index === 0 && thread.can.resolve ? (
-									<Button
-										variant="ghost"
-										size="sm"
-										shape="square"
-										type="button"
-										aria-label={resolved ? t`Reopen` : t`Resolve`}
-										title={resolved ? t`Reopen` : t`Resolve`}
-										disabled={actions.setStatus.isPending}
-										onClick={() =>
-											actions.setStatus.mutate({
-												threadId: thread.id,
-												status: resolved ? "open" : "resolved",
-											})
-										}
-									>
-										{resolved ? (
-											<ArrowCounterClockwise className="size-4" aria-hidden="true" />
-										) : (
-											<Check className="size-4" aria-hidden="true" />
-										)}
-									</Button>
-								) : null
-							}
-							onDeleteThread={
-								index === 0 && thread.can.delete ? () => setConfirmingDelete(true) : undefined
-							}
-							locale={i18n.locale}
-							editPending={
-								actions.editComment.isPending &&
-								actions.editComment.variables?.commentId === comment.id
-							}
-							onEdit={(body, onSaved) =>
-								actions.editComment.mutate(
-									{ threadId: thread.id, commentId: comment.id, body },
-									{ onSuccess: onSaved },
-								)
-							}
-							onDelete={() =>
-								actions.deleteComment.mutate({ threadId: thread.id, commentId: comment.id })
-							}
-						/>
-					))}
-				</ol>
-				{hiddenReplies > 0 && (
-					<p className="mt-2 ps-8 text-xs font-medium text-kumo-link">
-						{plural(hiddenReplies, { one: "# reply", other: "# replies" })}
-					</p>
-				)}
-
-				{active && isEditorAnchor(thread.anchor) && !detached && (
-					<Button
-						variant="ghost"
-						size="sm"
-						type="button"
-						className="mt-2"
-						onClick={(event) => {
-							event.stopPropagation();
-							goToAnchor(comments.editors, thread, true);
-						}}
-					>
-						{thread.anchor.type === "block" ? t`Go to block` : t`Go to text`}
-					</Button>
-				)}
-
-				{active && canComment && (
-					<div className="mt-3" onClick={(event) => event.stopPropagation()}>
-						<CommentComposer
-							value={reply}
-							onChange={setReply}
-							compact
-							label={t`Reply`}
-							placeholder={resolved ? t`Reply to reopen` : t`Reply`}
-							submitLabel={t`Reply`}
-							pending={actions.reply.isPending}
-							onSubmit={() =>
-								actions.reply.mutate(
-									{ threadId: thread.id, body: reply.trim() },
-									{ onSuccess: () => setReply("") },
-								)
-							}
-						/>
-					</div>
-				)}
-			</article>
-			{/* Outside the card, so clicks and Escape in the dialog don't reach the card's handlers. */}
-			<ConfirmDialog
-				open={confirmingDelete}
-				onClose={() => {
-					setConfirmingDelete(false);
-					actions.deleteThread.reset();
-				}}
-				role="alertdialog"
-				title={t`Delete thread`}
-				description={t`This deletes the thread and every reply in it. This action cannot be undone.`}
-				confirmLabel={t`Delete`}
-				pendingLabel={t`Deleting...`}
-				isPending={actions.deleteThread.isPending}
-				error={actions.deleteThread.error}
-				onConfirm={() =>
-					actions.deleteThread.mutate(thread.id, { onSuccess: () => setConfirmingDelete(false) })
+		<article
+			aria-label={t`Comment thread`}
+			data-editorial-thread-card={thread.id}
+			tabIndex={active ? -1 : 0}
+			onClick={activate}
+			onKeyDown={(event) => {
+				if (event.target !== event.currentTarget) return;
+				if (event.key === "Enter" || event.key === " ") {
+					event.preventDefault();
+					activate();
 				}
-			/>
+				if (event.key === "Escape") comments.setActiveThreadId(null);
+			}}
+			className={cn(
+				"group/thread rounded-xl border bg-kumo-base p-3 text-sm transition-[border-color,box-shadow]",
+				active ? "border-kumo-brand shadow-md" : "cursor-pointer border-kumo-line hover:shadow-sm",
+				resolved && !active && "opacity-75",
+			)}
+		>
+			{(heading || detached || resolved) && (
+				<div className="mb-2 flex min-w-0 items-center gap-1.5">
+					{heading && <span className="truncate text-xs text-kumo-subtle">{heading}</span>}
+					{detached && <Badge variant="secondary">{t`Detached`}</Badge>}
+					{resolved && <Badge variant="secondary">{t`Resolved`}</Badge>}
+				</div>
+			)}
+
+			{thread.anchor.type === "text" && (detached || !active) && (
+				<Quote text={thread.anchor.quote} detached={detached} />
+			)}
+
+			<ol className="flex flex-col gap-3">
+				{visibleComments.map((comment, index) => (
+					<CommentItem
+						key={comment.id}
+						comment={comment}
+						revealed={active}
+						threadActions={
+							index === 0 && thread.can.resolve ? (
+								<Button
+									variant="ghost"
+									size="sm"
+									shape="square"
+									type="button"
+									aria-label={resolved ? t`Reopen` : t`Resolve`}
+									title={resolved ? t`Reopen` : t`Resolve`}
+									disabled={actions.setStatus.isPending}
+									onClick={() =>
+										actions.setStatus.mutate({
+											threadId: thread.id,
+											status: resolved ? "open" : "resolved",
+										})
+									}
+								>
+									{resolved ? (
+										<ArrowCounterClockwise className="size-4" aria-hidden="true" />
+									) : (
+										<Check className="size-4" aria-hidden="true" />
+									)}
+								</Button>
+							) : null
+						}
+						onDeleteThread={
+							index === 0 && thread.can.delete
+								? () => setConfirmingDelete(true)
+								: undefined
+						}
+						entry={comments.entry}
+						people={thread.mentions}
+						locale={i18n.locale}
+						editPending={
+							actions.editComment.isPending &&
+							actions.editComment.variables?.commentId === comment.id
+						}
+						onEdit={(body, onSaved) =>
+							actions.editComment.mutate(
+								{ threadId: thread.id, commentId: comment.id, body },
+								{ onSuccess: onSaved },
+							)
+						}
+						onDelete={() =>
+							actions.deleteComment.mutate({ threadId: thread.id, commentId: comment.id })
+						}
+					/>
+				))}
+			</ol>
+			{hiddenReplies > 0 && (
+				<p className="mt-2 ps-8 text-xs font-medium text-kumo-link">
+					{plural(hiddenReplies, { one: "# reply", other: "# replies" })}
+				</p>
+			)}
+
+			{active && isEditorAnchor(thread.anchor) && !detached && (
+				<Button
+					variant="ghost"
+					size="sm"
+					type="button"
+					className="mt-2"
+					onClick={(event) => {
+						event.stopPropagation();
+						goToAnchor(comments.editors, thread, true);
+					}}
+				>
+					{thread.anchor.type === "block" ? t`Go to block` : t`Go to text`}
+				</Button>
+			)}
+
+			{active && canComment && (
+				<div className="mt-3" onClick={(event) => event.stopPropagation()}>
+					<CommentComposer
+						entry={comments.entry}
+						value={reply}
+						onChange={setReply}
+						compact
+						label={t`Reply`}
+						placeholder={resolved ? t`Reply to reopen` : t`Reply`}
+						submitLabel={t`Reply`}
+						pending={actions.reply.isPending}
+						onSubmit={() =>
+							actions.reply.mutate(
+								{ threadId: thread.id, body: draftToBody(reply) },
+								{ onSuccess: () => setReply(EMPTY_DRAFT) },
+							)
+						}
+					/>
+				</div>
+			)}
+		</article>
+		{/* Outside the card, so clicks and Escape in the dialog don't reach the card's handlers. */}
+		<ConfirmDialog
+			open={confirmingDelete}
+			onClose={() => {
+				setConfirmingDelete(false);
+				actions.deleteThread.reset();
+			}}
+			role="alertdialog"
+			title={t`Delete thread`}
+			description={t`This deletes the thread and every reply in it. This action cannot be undone.`}
+			confirmLabel={t`Delete`}
+			pendingLabel={t`Deleting...`}
+			isPending={actions.deleteThread.isPending}
+			error={actions.deleteThread.error}
+			onConfirm={() =>
+				actions.deleteThread.mutate(thread.id, { onSuccess: () => setConfirmingDelete(false) })
+			}
+		/>
 		</>
 	);
 }
@@ -842,6 +869,8 @@ function CommentItem({
 	revealed,
 	threadActions,
 	onDeleteThread,
+	entry,
+	people,
 	locale,
 	editPending,
 	onEdit,
@@ -853,6 +882,8 @@ function CommentItem({
 	/** Thread controls that sit beside the first comment's menu. */
 	threadActions?: React.ReactNode;
 	onDeleteThread?: () => void;
+	entry: EditorialEntry | null;
+	people: EditorialPerson[];
 	locale: string;
 	editPending: boolean;
 	/** Saves an edit, calling `onSaved` once it is stored. */
@@ -861,7 +892,7 @@ function CommentItem({
 }) {
 	const { t } = useLingui();
 	const [editing, setEditing] = React.useState(false);
-	const [body, setBody] = React.useState(comment.body);
+	const [body, setBody] = React.useState(EMPTY_DRAFT);
 	const deleted = comment.deletedAt !== null;
 	const name = comment.author?.name ?? (comment.author ? t`Unnamed user` : t`Deleted user`);
 
@@ -907,7 +938,7 @@ function CommentItem({
 										<DropdownMenu.Item
 											icon={<PencilSimple className="size-4" aria-hidden="true" />}
 											onClick={() => {
-												setBody(comment.body);
+												setBody(bodyToDraft(comment.body, people));
 												setEditing(true);
 											}}
 										>
@@ -941,6 +972,7 @@ function CommentItem({
 			{editing ? (
 				<div className="ps-8" onClick={(event) => event.stopPropagation()}>
 					<CommentComposer
+						entry={entry}
 						value={body}
 						onChange={setBody}
 						autoFocus
@@ -949,14 +981,14 @@ function CommentItem({
 						submitLabel={t`Save`}
 						pending={editPending}
 						onCancel={() => setEditing(false)}
-						onSubmit={() => onEdit(body.trim(), () => setEditing(false))}
+						onSubmit={() => onEdit(draftToBody(body), () => setEditing(false))}
 					/>
 				</div>
 			) : deleted ? (
 				<p className="ps-8 text-kumo-subtle italic">{t`Comment deleted`}</p>
 			) : (
 				<p className="ps-8 whitespace-pre-wrap break-words">
-					{comment.body}
+					<MentionText body={comment.body} people={people} />
 					{comment.editedAt && <span className="ms-1 text-xs text-kumo-subtle">{t`(edited)`}</span>}
 				</p>
 			)}

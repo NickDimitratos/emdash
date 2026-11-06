@@ -648,7 +648,7 @@ describe("editorial comment drafts", () => {
 		selectText(editor, "brown");
 		await userEvent.keyboard(COMMENT_SHORTCUT);
 		const margin = screen.getByRole("complementary", { name: "Comments" });
-		const composer = margin.getByRole("textbox", { name: "Comment" });
+		const composer = margin.getByRole("combobox", { name: "Comment" });
 		await composer.fill("Which shade?");
 		editor.commands.deleteSelection();
 
