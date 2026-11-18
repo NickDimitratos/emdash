@@ -32,6 +32,7 @@ import {
 	bodyToDraft,
 	draftToBody,
 	MentionText,
+	updateDraftText,
 	useMentionPicker,
 	type MentionDraft,
 } from "./mentions.js";
@@ -636,7 +637,7 @@ function CommentComposer({
 				className="max-h-60 resize-none field-sizing-content"
 				{...picker.textareaProps}
 				onChange={(event) => {
-					onChange({ ...value, text: event.target.value });
+					onChange(updateDraftText(value, event.target.value, event.target.selectionStart));
 					picker.syncCaret(event);
 				}}
 				onKeyDown={(event) => {
@@ -938,7 +939,7 @@ function CommentItem({
 										<DropdownMenu.Item
 											icon={<PencilSimple className="size-4" aria-hidden="true" />}
 											onClick={() => {
-												setBody(bodyToDraft(comment.body, people));
+												setBody(bodyToDraft(comment.body, people, t`Unknown user`));
 												setEditing(true);
 											}}
 										>
