@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, try/ci-prs-on-main]
   pull_request:
   merge_group:
 
