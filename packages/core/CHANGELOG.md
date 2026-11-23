@@ -1,5 +1,16 @@
 # emdash
 
+## 1.6.1
+
+### Patch Changes
+
+- [#4306](https://github.com/emdash-cms/emdash/pull/4306) [`0917f1b`](https://github.com/emdash-cms/emdash/commit/0917f1b8e1e8d9a526d1243273240bab04f57fd3) Thanks [@iNerdStack](https://github.com/iNerdStack)! - Fixes the WordPress plugin import review screen so it lists the source site's navigation menus, letting you see which menus will be imported before running the import. Reports skipped menus when a same-named menu already exists, so the import result shows how many were created vs. skipped instead of silently dropping them.
+- Updated dependencies [[`64df16d`](https://github.com/emdash-cms/emdash/commit/64df16d8393762d7444a96219fbbd4ca4edef308), [`d717fd6`](https://github.com/emdash-cms/emdash/commit/d717fd64faaf2fce87ebfaa532fe57406e3bf14b), [`6eb4bd6`](https://github.com/emdash-cms/emdash/commit/6eb4bd611954594a17902ff893bff5aaa4ac8604), [`933e2ee`](https://github.com/emdash-cms/emdash/commit/933e2eece85bed90331b48169a6fc6bf8aaff0f9), [`0917f1b`](https://github.com/emdash-cms/emdash/commit/0917f1b8e1e8d9a526d1243273240bab04f57fd3), [`dcc6bc1`](https://github.com/emdash-cms/emdash/commit/dcc6bc1cd09c17e146d0a4d4d2e2cefb255992c1)]:
+  - @emdash-cms/admin@1.6.1
+  - @emdash-cms/auth@1.6.1
+  - @emdash-cms/blocks@1.6.1
+  - @emdash-cms/gutenberg-to-portable-text@1.6.1
+
 <!-- emdash-changelog-archive: ./changelog/1.4.0-to-1.5.0.md -->
 
 ## 1.6.0
